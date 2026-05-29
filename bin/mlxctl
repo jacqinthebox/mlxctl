@@ -1,0 +1,377 @@
+#!/usr/bin/env bash
+# mlxctl — manage mlx_lm.server instances on macOS via launchd
+# https://github.com/jacqinthebox/mlxctl
+set -euo pipefail
+
+CONFIG_DIR="${MLXCTL_CONFIG_DIR:-$HOME/.config/mlxctl}"
+CONFIG_FILE="$CONFIG_DIR/servers.json"
+LAUNCH_AGENTS_DIR="$HOME/Library/LaunchAgents"
+LOG_DIR="$HOME/Library/Logs/mlxctl"
+LABEL_PREFIX="dev.local.mlxctl"
+
+UID_NUM="$(id -u)"
+DOMAIN="gui/$UID_NUM"
+
+# ---------- helpers ----------
+
+die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
+warn() { printf 'warn:  %s\n' "$*" >&2; }
+info() { printf '%s\n' "$*"; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+require_jq() {
+  have jq || die "jq not found. Install with: brew install jq"
+}
+
+require_config() {
+  [[ -f "$CONFIG_FILE" ]] || die "no config at $CONFIG_FILE — run: mlxctl init"
+}
+
+ensure_dirs() {
+  mkdir -p "$CONFIG_DIR" "$LOG_DIR" "$LAUNCH_AGENTS_DIR"
+}
+
+resolve_mlx_bin() {
+  if have mlx_lm.server; then
+    command -v mlx_lm.server
+    return
+  fi
+  local p
+  for p in \
+      /opt/homebrew/bin/mlx_lm.server \
+      /usr/local/bin/mlx_lm.server \
+      "$HOME/.local/bin/mlx_lm.server" \
+      "$HOME/.pyenv/shims/mlx_lm.server"; do
+    [[ -x "$p" ]] && { echo "$p"; return; }
+  done
+  die "mlx_lm.server not found in PATH or common locations. Install with: pip install mlx-lm"
+}
+
+label_for() { echo "${LABEL_PREFIX}.$1"; }
+plist_for() { echo "$LAUNCH_AGENTS_DIR/$(label_for "$1").plist"; }
+out_log()   { echo "$LOG_DIR/$1.out.log"; }
+err_log()   { echo "$LOG_DIR/$1.err.log"; }
+
+server_json() {
+  require_jq; require_config
+  local out
+  out="$(jq -e --arg n "$1" '.servers[] | select(.name==$n)' "$CONFIG_FILE" 2>/dev/null)" \
+    || die "no server named '$1' in config. Run: mlxctl list"
+  echo "$out"
+}
+
+server_exists() {
+  require_jq
+  [[ -f "$CONFIG_FILE" ]] || return 1
+  jq -e --arg n "$1" '.servers[] | select(.name==$n)' "$CONFIG_FILE" >/dev/null 2>&1
+}
+
+is_loaded() {
+  launchctl print "$DOMAIN/$(label_for "$1")" >/dev/null 2>&1
+}
+
+# Escape a string for safe inclusion in plist XML.
+xml_escape() {
+  local s="$1"
+  s="${s//&/&amp;}"
+  s="${s//</&lt;}"
+  s="${s//>/&gt;}"
+  echo "$s"
+}
+
+generate_plist() {
+  local name="$1"
+  local cfg model port host bin label out err extra_xml
+  cfg="$(server_json "$name")"
+
+  model="$(echo "$cfg" | jq -r '.model')"
+  port="$(echo "$cfg" | jq -r '.port')"
+  host="$(echo "$cfg" | jq -r '.host // "127.0.0.1"')"
+  bin="$(echo "$cfg"  | jq -r '.bin // empty')"
+  [[ -z "$bin" ]] && bin="$(resolve_mlx_bin)"
+
+  extra_xml=""
+  while IFS= read -r a; do
+    [[ -z "$a" ]] && continue
+    extra_xml+="    <string>$(xml_escape "$a")</string>"$'\n'
+  done < <(echo "$cfg" | jq -r '.extraArgs[]? // empty')
+
+  label="$(label_for "$name")"
+  out="$(out_log "$name")"
+  err="$(err_log "$name")"
+
+  cat <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$(xml_escape "$label")</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$(xml_escape "$bin")</string>
+    <string>--model</string>
+    <string>$(xml_escape "$model")</string>
+    <string>--host</string>
+    <string>$(xml_escape "$host")</string>
+    <string>--port</string>
+    <string>$(xml_escape "$port")</string>
+${extra_xml}  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Interactive</string>
+  <key>StandardOutPath</key>
+  <string>$(xml_escape "$out")</string>
+  <key>StandardErrorPath</key>
+  <string>$(xml_escape "$err")</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:${HOME}/.local/bin:${HOME}/.pyenv/shims</string>
+  </dict>
+</dict>
+</plist>
+EOF
+}
+
+# ---------- commands ----------
+
+cmd_init() {
+  ensure_dirs
+  if [[ -f "$CONFIG_FILE" ]]; then
+    info "Config already exists at $CONFIG_FILE"
+    return
+  fi
+  echo '{"servers": []}' | jq . > "$CONFIG_FILE"
+  info "Created $CONFIG_FILE"
+  info ""
+  info "Add your first server with:"
+  info "  mlxctl add qwen --model mlx-community/Qwen3-Coder-Next-4bit --port 8080"
+}
+
+cmd_add() {
+  require_jq
+  [[ $# -gt 0 ]] || die "usage: mlxctl add <name> --model M --port P [--host H] [--bin PATH] [-- ARG ARG ...]"
+  local name="$1"; shift
+  local model="" port="" host="127.0.0.1" bin=""
+  local -a extra_args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --model) model="$2"; shift 2;;
+      --port)  port="$2";  shift 2;;
+      --host)  host="$2";  shift 2;;
+      --bin)   bin="$2";   shift 2;;
+      --)      shift; extra_args=("$@"); break;;
+      *) die "unknown flag: $1";;
+    esac
+  done
+  [[ -n "$model" ]] || die "--model is required"
+  [[ -n "$port"  ]] || die "--port is required"
+  [[ "$port" =~ ^[0-9]+$ ]] || die "--port must be an integer"
+
+  [[ -f "$CONFIG_FILE" ]] || cmd_init >/dev/null
+
+  if server_exists "$name"; then
+    die "server '$name' already exists. Use 'mlxctl remove $name' first."
+  fi
+
+  local extra_json="[]"
+  if [[ ${#extra_args[@]} -gt 0 ]]; then
+    extra_json="$(printf '%s\n' "${extra_args[@]}" | jq -R . | jq -s .)"
+  fi
+
+  local tmp; tmp="$(mktemp)"
+  jq \
+    --arg n "$name" --arg m "$model" --argjson p "$port" \
+    --arg h "$host" --arg b "$bin" --argjson e "$extra_json" \
+    '.servers += [
+       {name:$n, model:$m, port:$p, host:$h, extraArgs:$e}
+       + (if $b == "" then {} else {bin:$b} end)
+     ]' \
+    "$CONFIG_FILE" > "$tmp"
+  mv "$tmp" "$CONFIG_FILE"
+  info "Added '$name' → ${host}:${port}  (${model})"
+  info "Start it with: mlxctl start $name"
+}
+
+cmd_remove() {
+  require_jq; require_config
+  [[ $# -gt 0 ]] || die "usage: mlxctl remove <name>"
+  local name="$1"
+  server_exists "$name" || die "no server named '$name'"
+  if is_loaded "$name"; then
+    info "Stopping '$name' first..."
+    cmd_stop "$name" || true
+  fi
+  local plist; plist="$(plist_for "$name")"
+  [[ -f "$plist" ]] && rm -f "$plist"
+  local tmp; tmp="$(mktemp)"
+  jq --arg n "$name" '.servers |= map(select(.name != $n))' "$CONFIG_FILE" > "$tmp"
+  mv "$tmp" "$CONFIG_FILE"
+  info "Removed '$name'"
+}
+
+cmd_list() {
+  require_config
+  local count
+  count="$(jq '.servers | length' "$CONFIG_FILE")"
+  if [[ "$count" -eq 0 ]]; then
+    info "No servers configured. Add one with: mlxctl add <name> --model M --port P"
+    return
+  fi
+  printf '%-18s %-46s %-6s %-9s\n' "NAME" "MODEL" "PORT" "STATUS"
+  printf '%-18s %-46s %-6s %-9s\n' "----" "-----" "----" "------"
+  while IFS=$'\t' read -r name model port; do
+    local status
+    if is_loaded "$name"; then status="running"; else status="stopped"; fi
+    printf '%-18s %-46s %-6s %-9s\n' "$name" "$model" "$port" "$status"
+  done < <(jq -r '.servers[] | "\(.name)\t\(.model)\t\(.port)"' "$CONFIG_FILE")
+}
+
+cmd_start() {
+  [[ $# -gt 0 ]] || die "usage: mlxctl start <name>"
+  local name="$1"
+  ensure_dirs
+  server_json "$name" >/dev/null
+  local plist; plist="$(plist_for "$name")"
+  generate_plist "$name" > "$plist"
+  if is_loaded "$name"; then
+    info "'$name' is already loaded — use 'mlxctl restart $name' to apply config changes."
+    return
+  fi
+  launchctl bootstrap "$DOMAIN" "$plist"
+  info "Started '$name'"
+  info "  logs:  $(out_log "$name")"
+  info "  plist: $plist"
+}
+
+cmd_stop() {
+  [[ $# -gt 0 ]] || die "usage: mlxctl stop <name>"
+  local name="$1"
+  local label; label="$(label_for "$name")"
+  local plist; plist="$(plist_for "$name")"
+  if is_loaded "$name"; then
+    launchctl bootout "$DOMAIN/$label"
+    info "Stopped '$name'"
+  else
+    info "'$name' is not running."
+  fi
+  if [[ -f "$plist" ]]; then
+    rm -f "$plist"
+    info "Removed plist (will not autostart on next login)."
+  fi
+}
+
+cmd_restart() {
+  [[ $# -gt 0 ]] || die "usage: mlxctl restart <name>"
+  local name="$1"
+  cmd_stop "$name" || true
+  sleep 0.5
+  cmd_start "$name"
+}
+
+cmd_status() {
+  if [[ $# -eq 0 ]]; then
+    cmd_list
+    return
+  fi
+  local name="$1"
+  local label; label="$(label_for "$name")"
+  if is_loaded "$name"; then
+    launchctl print "$DOMAIN/$label"
+  else
+    info "'$name' is not running."
+    exit 1
+  fi
+}
+
+cmd_logs() {
+  [[ $# -gt 0 ]] || die "usage: mlxctl logs <name> [-f]"
+  local name="$1"; shift
+  local follow=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -f|--follow) follow=true; shift;;
+      *) die "unknown flag: $1";;
+    esac
+  done
+  local out; out="$(out_log "$name")"
+  local err; err="$(err_log "$name")"
+  if [[ ! -f "$out" && ! -f "$err" ]]; then
+    die "no log files yet for '$name'"
+  fi
+  touch "$out" "$err"
+  if $follow; then
+    tail -n 50 -f "$out" "$err"
+  else
+    tail -n 100 "$out" "$err"
+  fi
+}
+
+cmd_plist() {
+  [[ $# -gt 0 ]] || die "usage: mlxctl plist <name>"
+  generate_plist "$1"
+}
+
+cmd_edit() {
+  ensure_dirs
+  [[ -f "$CONFIG_FILE" ]] || cmd_init >/dev/null
+  "${EDITOR:-vi}" "$CONFIG_FILE"
+}
+
+cmd_help() {
+  cat <<EOF
+mlxctl — manage mlx_lm.server instances on macOS via launchd
+
+Usage: mlxctl <command> [args]
+
+Config:
+  init                                  create config directory and empty config
+  add <name> --model M --port P         add a server
+              [--host H] [--bin PATH]
+              [-- EXTRA_ARGS...]
+  remove <name>                         stop and remove a server
+  list                                  list configured servers + running status
+  edit                                  open config in \$EDITOR
+  plist <name>                          print the generated launchd plist
+
+Lifecycle:
+  start <name>                          install plist + load (autostarts at login)
+  stop <name>                           unload + remove plist (no autostart)
+  restart <name>                        stop + start
+  status [name]                         list, or 'launchctl print' for one
+  logs <name> [-f]                      tail stdout + stderr
+
+Paths:
+  config: $CONFIG_FILE
+  plists: $LAUNCH_AGENTS_DIR/${LABEL_PREFIX}.<name>.plist
+  logs:   $LOG_DIR/<name>.{out,err}.log
+EOF
+}
+
+# ---------- dispatch ----------
+
+main() {
+  local cmd="${1:-help}"
+  [[ $# -gt 0 ]] && shift || true
+  case "$cmd" in
+    init)              cmd_init    "$@";;
+    add)               cmd_add     "$@";;
+    remove|rm)         cmd_remove  "$@";;
+    list|ls)           cmd_list    "$@";;
+    start)             cmd_start   "$@";;
+    stop)              cmd_stop    "$@";;
+    restart)           cmd_restart "$@";;
+    status)            cmd_status  "$@";;
+    logs)              cmd_logs    "$@";;
+    plist)             cmd_plist   "$@";;
+    edit)              cmd_edit    "$@";;
+    help|-h|--help|"") cmd_help;;
+    *) die "unknown command: $cmd  (try 'mlxctl help')";;
+  esac
+}
+
+main "$@"

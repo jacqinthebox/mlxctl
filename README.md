@@ -131,7 +131,21 @@ Three gotchas worth knowing:
 
 1. **Don't include `/v1` in `OPENAI_BASE_URL`** — omegon's OpenAI client appends `/v1/chat/completions` itself, so a `/v1` suffix yields `/v1/v1/...` → 404. `mlxctl omegon` strips it for you.
 2. **Unset `OLLAMA_HOST`** — if you have it exported in your shell, omegon picks the Ollama provider by default (and sends Ollama-style names like `gemma4:26b` which MLX rejects, because HuggingFace repo ids can't contain `:`). `mlxctl omegon` unsets it for you.
-3. **Reasoning models** (Gemma 4, DeepSeek-R1, Qwen3-Thinking) stream thoughts in `delta.reasoning`, not `delta.content`. Omegon's OpenAI client currently shows only `content`. Qwen3-Coder is a regular non-reasoning model and works out of the box; Gemma 4 will appear "silent" until omegon adds reasoning support.
+3. **Reasoning models appear "silent"** — Gemma 4, DeepSeek-R1, Qwen3-Thinking etc. emit their chain-of-thought in `message.reasoning` / `delta.reasoning`. Omegon's OpenAI-compatible client only renders `content`, and at omegon's default `max_tokens` the model often exhausts the budget mid-thought, leaving `content` empty → blank bubble. Two fixes:
+
+   - **Disable thinking on the server** (recommended for chat). Add this to the model's `extraArgs`:
+     ```json
+     "extraArgs": ["--chat-template-args", "{\"enable_thinking\":false}"]
+     ```
+     Then `mlxctl restart <name>`. Gemma 4 / Qwen3 will answer directly with no `<think>` block. Verify with a 50-token probe:
+     ```bash
+     curl -sS -X POST http://127.0.0.1:8082/v1/chat/completions \
+       -H 'Content-Type: application/json' \
+       -d '{"model":"<id>","messages":[{"role":"user","content":"say hi"}],"max_tokens":50}'
+     ```
+   - **Leave thinking on, but raise the budget** if you want the reasoning visible elsewhere (e.g. mlxctl's chat UI, which renders `reasoning`). Pass `--max-tokens 4096` (default is 512) in `extraArgs`. Note: omegon will still show a blank bubble unless its client learns to read `reasoning`.
+
+   Qwen3-Coder is a non-reasoning model — works out of the box, no flags needed.
 
 ## Config file
 
@@ -152,7 +166,7 @@ Three gotchas worth knowing:
       "model": "mlx-community/gemma-4-26b-a4b-it-4bit",
       "port": 8082,
       "host": "127.0.0.1",
-      "extraArgs": ["--log-level", "INFO"]
+      "extraArgs": ["--chat-template-args", "{\"enable_thinking\":false}"]
     }
   ]
 }

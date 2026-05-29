@@ -489,11 +489,14 @@ cmd_omegon() {
   done
 
   local sj; sj="$(server_json "$name")"
-  local model host port url
+  local model host port base_url v1_url
   model="$(echo "$sj" | jq -r '.model')"
   host="$(echo "$sj"  | jq -r '.host')"
   port="$(echo "$sj"  | jq -r '.port')"
-  url="http://${host}:${port}/v1"
+  # Omegon's OpenAI client appends "/v1/chat/completions" itself, so the base
+  # URL must NOT include /v1 — otherwise you get /v1/v1/chat/completions → 404.
+  base_url="http://${host}:${port}"
+  v1_url="${base_url}/v1"
 
   if [[ "$mode" == "slash" ]]; then
     # Slash commands to paste inside an Omegon TUI session.
@@ -502,20 +505,24 @@ cmd_omegon() {
 /model openai:${model}
 EOF
     info ""
-    info "Note: also export OPENAI_BASE_URL=${url} in the shell that launches omegon."
+    info "Note: also export OPENAI_BASE_URL=${base_url} (no /v1 suffix!) in the shell that launches omegon."
+    info "      Also: unset OLLAMA_HOST if you have it set, or omegon will pick the Ollama provider."
     return
   fi
 
   # Default: shell exports on stdout, guidance on stderr.
   {
-    echo "# Omegon config for endpoint '$name' (${url})"
+    echo "# Omegon config for endpoint '$name' (${v1_url})"
     echo "#   shell:   eval \"\$(mlxctl omegon $name)\""
-    echo "#   in TUI:  /secrets set OPENAI_API_KEY dummy"
+    echo "#   in TUI:  /login openai            (paste 'dummy' as the key)"
     echo "#            /model openai:${model}"
+    echo "#"
+    echo "#   Note: base URL below has NO /v1 suffix — omegon appends it itself."
     echo
   } >&2
   cat <<EOF
-export OPENAI_BASE_URL='${url}'
+unset OLLAMA_HOST
+export OPENAI_BASE_URL='${base_url}'
 export OPENAI_API_KEY='dummy'
 EOF
 }

@@ -119,14 +119,19 @@ Requires `python3` (built into macOS).
 Typical flow:
 
 ```bash
-eval "$(mlxctl omegon gemma)"      # sets OPENAI_BASE_URL and OPENAI_API_KEY
+eval "$(mlxctl omegon qwen)"        # sets OPENAI_BASE_URL (host only — no /v1!),
+                                    # OPENAI_API_KEY=dummy, and unsets OLLAMA_HOST
 omegon                              # launches with the env in place
 # then inside the TUI:
-#   /secrets set OPENAI_API_KEY dummy
-#   /model openai:mlx-community/gemma-4-26b-a4b-it-4bit
+#   /login openai                   # paste 'dummy' as the API key
+#   /model openai:mlx-community/Qwen3-Coder-Next-4bit
 ```
 
-> Don't use Omegon's `Ollama (Local)` provider for MLX — that path talks to Ollama's native API on `:11434` and uses Ollama-style model names like `gemma4:26b`, which MLX rejects (HuggingFace repo ids can't contain `:`).
+Three gotchas worth knowing:
+
+1. **Don't include `/v1` in `OPENAI_BASE_URL`** — omegon's OpenAI client appends `/v1/chat/completions` itself, so a `/v1` suffix yields `/v1/v1/...` → 404. `mlxctl omegon` strips it for you.
+2. **Unset `OLLAMA_HOST`** — if you have it exported in your shell, omegon picks the Ollama provider by default (and sends Ollama-style names like `gemma4:26b` which MLX rejects, because HuggingFace repo ids can't contain `:`). `mlxctl omegon` unsets it for you.
+3. **Reasoning models** (Gemma 4, DeepSeek-R1, Qwen3-Thinking) stream thoughts in `delta.reasoning`, not `delta.content`. Omegon's OpenAI client currently shows only `content`. Qwen3-Coder is a regular non-reasoning model and works out of the box; Gemma 4 will appear "silent" until omegon adds reasoning support.
 
 ## Config file
 

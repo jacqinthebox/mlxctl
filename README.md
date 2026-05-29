@@ -147,6 +147,26 @@ Three gotchas worth knowing:
 
    Qwen3-Coder is a non-reasoning model — works out of the box, no flags needed.
 
+##### Why reasoning models go silent in OpenAI-compatible clients
+
+Reasoning models like Gemma 4, DeepSeek-R1, and Qwen3-Thinking are trained to emit a chain-of-thought between `<think>...</think>` tags before their final answer. Different servers handle those tags differently:
+
+| Server | `<think>` handling | Net effect |
+|---|---|---|
+| **Ollama** | Merges thought + answer into a single `message.content` string (or strips `<think>` blocks entirely for some models) | Any OpenAI-compatible client sees a normal response. Works everywhere. |
+| **mlx_lm.server** | Splits them — chain-of-thought goes into a separate `message.reasoning` field, only the final answer goes into `message.content` | Clients that read `content` only see whatever the model wrote *after* `</think>`. If the budget runs out first, `content` is empty. |
+
+That's why the same Gemma 4 model "worked in Ollama" but appears silent through MLX+omegon. It's not the model, it's the response shape.
+
+`mlx_lm.server`'s default `--max-tokens` is **512** — generous for a non-reasoning model, tiny for one that spends 200–800 tokens on hidden thinking before saying "Hi". When the budget runs out mid-thought, MLX returns `finish_reason: "length"`, `reasoning` populated, `content: ""`. Omegon dutifully renders the empty string.
+
+Two ways out:
+
+- **Server-side off switch (`enable_thinking:false`)**. The chat template for Gemma 4 and Qwen3 honours this flag — when set, the template skips the `<think>` injection entirely and the model behaves like a plain chat model. This is the simplest fix for any OpenAI-compatible client that doesn't speak the `reasoning` field. It's also the cheapest at inference time (no wasted tokens).
+- **Per-request override**. The same flag can be sent per request as `chat_template_kwargs: {"enable_thinking": false}` in the JSON body. Useful if you want one server that some clients use with thinking on (mlxctl chat UI shows the reasoning trace) and others without.
+
+Once omegon learns to render `delta.reasoning` / `message.reasoning`, neither workaround will be needed. Until then, server-side off is the path of least surprise.
+
 ## Config file
 
 `~/.config/mlxctl/servers.json`:

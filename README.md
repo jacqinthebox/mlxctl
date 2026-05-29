@@ -257,6 +257,43 @@ for s in $(jq -r '.servers[].name' ~/.config/mlxctl/servers.json); do
 done
 ```
 
+## Field notes on "OpenAI-compatible"
+
+If you're new to running local LLMs and shuttling them between clients (chat UIs, agents, editors), the most useful thing to internalize early is this:
+
+> **"OpenAI-compatible" means the URL and the JSON skeleton match. Nothing else is guaranteed.**
+
+Every layer below the wire format drifts between implementations. None of these layers is wrong on its own — they each made a reasonable local choice — but stacking them creates booby traps. Some of them you'll only discover by getting bitten.
+
+### Layers that drift
+
+| Layer | Where it bites |
+|---|---|
+| **URL shape** | Some clients want `OPENAI_BASE_URL=http://host:port`, some want `…/v1`. Get it wrong and you see `404 /v1/v1/chat/completions`. |
+| **Provider selection** | Env vars like `OLLAMA_HOST` or `ANTHROPIC_API_KEY` can silently change which adapter a multi-provider client picks. Look at the actual footer/status before debugging the wire. |
+| **Model id grammar** | Ollama tags use `:` (`gemma4:26b`). HuggingFace repo ids forbid `:` (`mlx-community/gemma-4-26b-a4b-it-4bit`). Servers usually reject the wrong shape with terse errors. |
+| **Auth conventions** | OpenAI wants `Authorization: Bearer <key>`. Some local servers want any non-empty string ("dummy" works). A few want no header at all and reject if you send one. |
+| **Default knobs** | `mlx_lm.server` defaults `max_tokens=512`. Some servers default to a few thousand. A reasoning model on the low default goes silent. |
+| **Response shape extensions** | OpenAI added `message.reasoning` for o-series. MLX adopted it for any reasoning-capable model. Ollama merges everything into `content`. Clients that predate the extension only read `content` → blank bubbles. |
+| **Capability detection** | Some clients keep a hardcoded allowlist of "reasoning models." If your model name isn't on the list, the reasoning field is silently dropped even when it's right there in the response. |
+| **Chat template semantics** | `enable_thinking: false`, `tools: [...]`, `response_format: {...}` — each is honored by some templates and ignored by others. The same flag can mean different things across models. |
+| **Streaming format** | Ollama is line-delimited JSON. OpenAI is Server-Sent Events (`data: {...}\n\n` framing, `data: [DONE]` terminator). They're not interchangeable even though both ship JSON over HTTP. |
+| **Tool calling** | OpenAI uses `tool_calls` arrays. Anthropic uses `tool_use` content blocks. Ollama has its own shape. llama.cpp has yet another. None map cleanly. |
+| **Stop / finish reasons** | `"stop"`, `"length"`, `"end_turn"`, `"tool_use"`, `"content_filter"` — overlapping vocabularies with non-identical meanings. |
+| **Token counting** | Input / output / reasoning / cached / reused — every provider counts and reports differently. Bills and rate limits diverge accordingly. |
+
+### Survival kit
+
+1. **Probe every new endpoint with `curl` before pointing a real client at it.** Five minutes of `curl … | jq` saves an hour of "why is my UI broken." Always print the full response shape, not just `content` — that's how you spot `reasoning`, `tool_calls`, refusals, and other fields a client might be silently dropping.
+2. **When something "doesn't answer," check `finish_reason` first.** `"length"` with empty `content` means the model exhausted the budget on something invisible (reasoning, tools, formatting). `"stop"` with empty `content` means you're parsing the wrong field.
+3. **Trust the server's logs, not your client's UI.** A 200 OK with a blank UI bubble is a parser problem on the client side, not a model problem. The wire trace doesn't lie.
+4. **Treat each model + server + client triplet as its own configuration.** "Qwen on MLX with omegon" and "Gemma on MLX with omegon" are different setups with different defaults and different bugs. Don't assume a fix for one carries over.
+5. **The 9pm-Friday debugging session is the standard onboarding ritual.** Everyone who knows this ecosystem learned it the same way. There is no comprehensive tutorial because the ecosystem moves faster than anyone can write one.
+
+### Worked example: the Gemma blank-bubble episode
+
+The "Reasoning models appear silent" gotcha and "Why reasoning models go silent" deep-dive above walk through one full instance of these layers colliding: Gemma 4 (model thinks before answering) + MLX (splits thinking into a separate field) + omegon (only reads `content`, doesn't recognize Gemma as a reasoning model) + `max_tokens=512` default (thinking exhausts the budget). Pull on any one of those four threads and the bug disappears. We pulled on the chat template (`enable_thinking:false`). Equally valid would have been raising `max_tokens`, switching client, or switching server. Knowing which thread to pull is the skill.
+
 ## License
 
 MIT

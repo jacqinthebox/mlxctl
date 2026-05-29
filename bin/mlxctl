@@ -340,6 +340,79 @@ cmd_plist() {
   generate_plist "$1"
 }
 
+# Resolve the real directory of this script, following one or more symlinks.
+# We need this so `mlxctl chat` can find share/chat.html relative to the
+# original repo even when invoked via the install.sh-created symlink.
+resolve_repo_root() {
+  command -v python3 >/dev/null 2>&1 \
+    || die "python3 not found (required for 'mlxctl chat')"
+  python3 -c '
+import os, sys
+real = os.path.realpath(sys.argv[1])
+print(os.path.dirname(os.path.dirname(real)))
+' "${BASH_SOURCE[0]}"
+}
+
+cmd_chat() {
+  require_jq; require_config
+
+  local port=7780
+  local no_open=false
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --port|-p)    port="$2"; shift 2;;
+      --no-open|-n) no_open=true; shift;;
+      -h|--help)
+        cat <<EOF
+usage: mlxctl chat [--port N] [--no-open]
+
+Serves a single-page chat UI that talks directly to your configured
+endpoints' /v1/chat/completions. Handy for testing endpoints without
+involving any other client. Streams responses, handles reasoning
+models, and shows TTFT / tokens/sec.
+
+Options:
+  --port, -p N     port to bind on 127.0.0.1 (default: 7780)
+  --no-open, -n    don't open the browser automatically
+EOF
+        return 0;;
+      *) die "unknown flag: $1  (try: mlxctl chat --help)";;
+    esac
+  done
+
+  command -v python3 >/dev/null 2>&1 \
+    || die "python3 not found (required for the built-in HTTP server)"
+
+  local repo_root html_src
+  repo_root="$(resolve_repo_root)"
+  html_src="$repo_root/share/chat.html"
+  [[ -f "$html_src" ]] || die "chat.html not found at $html_src"
+
+  local tmp
+  tmp="$(mktemp -d -t mlxctl-chat.XXXXXX)"
+  trap "rm -rf '$tmp'" EXIT INT TERM
+
+  cp "$html_src" "$tmp/index.html"
+
+  # Strip the apiKey field from each endpoint before exposing to the page.
+  # The chat UI runs in the user's browser on localhost talking to MLX on
+  # localhost, so the dummy key isn't needed — and this avoids ever sending
+  # a real cloud key (if the user adds one) into a browser tab.
+  jq -c '[.servers[] | {name, model, port, host, baseUrl: ("http://\(.host // "127.0.0.1"):\(.port)/v1")}]' \
+    "$CONFIG_FILE" > "$tmp/endpoints.json"
+
+  local url="http://127.0.0.1:${port}"
+  info "mlxctl chat — serving at ${url}"
+  info "Endpoints: $(jq -r '.servers | map(.name) | join(", ") // "(none)"' "$CONFIG_FILE")"
+  info "Ctrl+C to stop"
+
+  if ! $no_open; then
+    ( sleep 0.4 && open "$url" 2>/dev/null ) &
+  fi
+
+  cd "$tmp" && exec python3 -m http.server --bind 127.0.0.1 "$port"
+}
+
 cmd_ps() {
   require_config
   local count
@@ -416,6 +489,9 @@ Metrics:
   ps                                    one-shot table of PID / CPU / RSS / uptime
   top [-n SECS]                         live-refresh ps (default every 2s)
 
+Chat UI:
+  chat [--port N] [--no-open]           serve a tiny web chat UI to test endpoints
+
 Paths:
   config: $CONFIG_FILE
   plists: $LAUNCH_AGENTS_DIR/${LABEL_PREFIX}.<name>.plist
@@ -441,6 +517,7 @@ main() {
     plist)             cmd_plist   "$@";;
     ps)                cmd_ps      "$@";;
     top)               cmd_top     "$@";;
+    chat)              cmd_chat    "$@";;
     edit)              cmd_edit    "$@";;
     help|-h|--help|"") cmd_help;;
     *) die "unknown command: $cmd  (try 'mlxctl help')";;

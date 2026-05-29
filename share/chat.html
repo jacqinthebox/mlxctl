@@ -1,0 +1,447 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>mlxctl chat</title>
+  <style>
+    :root {
+      --bg: #0f1116;
+      --panel: #181b22;
+      --border: #2a2f3a;
+      --fg: #e6e8ec;
+      --fg-dim: #9aa3b2;
+      --accent: #6aa9ff;
+      --user: #8bc78b;
+      --assistant: #e6e8ec;
+      --reasoning: #6e7686;
+      --error: #ff7070;
+      --code: #1d212a;
+    }
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; }
+    body {
+      background: var(--bg);
+      color: var(--fg);
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
+      font-size: 14px;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      padding: 12px 16px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    header h1 {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--fg-dim);
+      letter-spacing: 0.5px;
+    }
+    header select, header button {
+      background: var(--bg);
+      color: var(--fg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 10px;
+      font-size: 13px;
+      font-family: inherit;
+      cursor: pointer;
+    }
+    header select:hover, header button:hover { border-color: var(--accent); }
+    header .model {
+      color: var(--fg-dim);
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 12px;
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #conversation {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+    }
+    .msg {
+      margin-bottom: 20px;
+      max-width: 900px;
+    }
+    .msg .label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--fg-dim);
+      margin-bottom: 6px;
+      font-weight: 600;
+    }
+    .msg.user .label { color: var(--user); }
+    .msg.assistant .label { color: var(--accent); }
+    .msg.system .label { color: var(--fg-dim); }
+    .msg .body {
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      line-height: 1.5;
+    }
+    .msg.system .body { color: var(--fg-dim); font-style: italic; }
+    .msg.error .body { color: var(--error); }
+    .reasoning {
+      color: var(--reasoning);
+      font-style: italic;
+      border-left: 2px solid var(--border);
+      padding-left: 12px;
+      margin-bottom: 8px;
+      white-space: pre-wrap;
+    }
+    .reasoning .label {
+      font-style: normal;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      margin-bottom: 4px;
+      color: var(--reasoning);
+      cursor: pointer;
+      user-select: none;
+    }
+    .reasoning.collapsed .body { display: none; }
+    .stats {
+      margin-top: 8px;
+      font-size: 11px;
+      color: var(--fg-dim);
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    }
+    footer {
+      padding: 12px 16px;
+      background: var(--panel);
+      border-top: 1px solid var(--border);
+    }
+    .input-row {
+      display: flex;
+      gap: 8px;
+      align-items: flex-end;
+      max-width: 900px;
+    }
+    textarea {
+      flex: 1;
+      background: var(--bg);
+      color: var(--fg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 12px;
+      font-size: 14px;
+      font-family: inherit;
+      resize: none;
+      min-height: 38px;
+      max-height: 200px;
+      line-height: 1.4;
+    }
+    textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    #send {
+      background: var(--accent);
+      color: #0f1116;
+      border: none;
+      border-radius: 6px;
+      padding: 8px 16px;
+      font-weight: 600;
+      cursor: pointer;
+      height: 38px;
+    }
+    #send:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    .hint {
+      max-width: 900px;
+      margin-top: 6px;
+      font-size: 11px;
+      color: var(--fg-dim);
+    }
+    .empty {
+      color: var(--fg-dim);
+      text-align: center;
+      padding: 40px;
+      font-style: italic;
+    }
+    code {
+      background: var(--code);
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      font-size: 0.9em;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>mlxctl chat</h1>
+    <select id="endpoint" title="Pick a configured endpoint"></select>
+    <span class="model" id="model-display"></span>
+    <button id="clear" title="Clear conversation history (Cmd+K)">Clear</button>
+  </header>
+
+  <main id="conversation">
+    <div class="empty" id="empty">No messages yet — type below to start.</div>
+  </main>
+
+  <footer>
+    <div class="input-row">
+      <textarea id="input" placeholder="Type a message…  (Enter to send, Shift+Enter for newline)" rows="1"></textarea>
+      <button id="send">Send</button>
+    </div>
+    <div class="hint">
+      Connects directly to the selected endpoint's <code>/v1/chat/completions</code>. Streams responses.
+      Handles reasoning models (Gemma 4, DeepSeek-R1, etc.) — chain-of-thought shown dimmed.
+    </div>
+  </footer>
+
+  <script>
+    'use strict';
+
+    const els = {
+      endpoint: document.getElementById('endpoint'),
+      modelDisplay: document.getElementById('model-display'),
+      input: document.getElementById('input'),
+      send: document.getElementById('send'),
+      clear: document.getElementById('clear'),
+      conversation: document.getElementById('conversation'),
+      empty: document.getElementById('empty'),
+    };
+
+    let endpoints = [];
+    let history = [];
+    let inflight = null;
+
+    async function loadEndpoints() {
+      try {
+        const r = await fetch('/endpoints.json');
+        endpoints = await r.json();
+      } catch (e) {
+        endpoints = [];
+      }
+      if (!Array.isArray(endpoints) || endpoints.length === 0) {
+        els.endpoint.innerHTML = '<option value="">(no endpoints — run: mlxctl add ...)</option>';
+        els.send.disabled = true;
+        return;
+      }
+      els.endpoint.innerHTML = endpoints.map((e, i) =>
+        `<option value="${i}">${escape(e.name)}  •  :${e.port}</option>`
+      ).join('');
+      updateModelDisplay();
+    }
+
+    function updateModelDisplay() {
+      const ep = endpoints[els.endpoint.value];
+      els.modelDisplay.textContent = ep ? ep.model : '';
+    }
+
+    function escape(s) {
+      return String(s).replace(/[&<>"']/g, c => ({
+        '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+      }[c]));
+    }
+
+    function autoresize() {
+      els.input.style.height = 'auto';
+      els.input.style.height = Math.min(els.input.scrollHeight, 200) + 'px';
+    }
+
+    function addMsg(role, text) {
+      els.empty.style.display = 'none';
+      const div = document.createElement('div');
+      div.className = 'msg ' + role;
+      const label = document.createElement('div');
+      label.className = 'label';
+      label.textContent = role === 'user' ? 'You'
+                       : role === 'assistant' ? 'Assistant'
+                       : role === 'error' ? 'Error'
+                       : 'System';
+      const body = document.createElement('div');
+      body.className = 'body';
+      body.textContent = text || '';
+      div.appendChild(label);
+      div.appendChild(body);
+      els.conversation.appendChild(div);
+      els.conversation.scrollTop = els.conversation.scrollHeight;
+      return body;
+    }
+
+    function addReasoningBlock(container) {
+      const wrap = document.createElement('div');
+      wrap.className = 'reasoning';
+      const label = document.createElement('div');
+      label.className = 'label';
+      label.textContent = '💭 thinking… (click to toggle)';
+      label.addEventListener('click', () => wrap.classList.toggle('collapsed'));
+      const body = document.createElement('div');
+      body.className = 'body';
+      wrap.appendChild(label);
+      wrap.appendChild(body);
+      container.parentElement.insertBefore(wrap, container);
+      return body;
+    }
+
+    function addStats(container, stats) {
+      const div = document.createElement('div');
+      div.className = 'stats';
+      const ttftMs = stats.ttft !== null ? Math.round(stats.ttft) + 'ms' : '—';
+      const totalS = (stats.total / 1000).toFixed(1) + 's';
+      const tps = stats.contentTokens && stats.genMs > 0
+        ? (stats.contentTokens / (stats.genMs / 1000)).toFixed(1) + ' tok/s'
+        : '—';
+      div.textContent = `TTFT ${ttftMs}  ·  total ${totalS}  ·  content ${stats.contentTokens} tok  ·  reasoning ${stats.reasoningTokens} tok  ·  ${tps}`;
+      container.parentElement.appendChild(div);
+    }
+
+    async function send() {
+      const text = els.input.value.trim();
+      if (!text || inflight) return;
+      const ep = endpoints[els.endpoint.value];
+      if (!ep) return;
+
+      history.push({ role: 'user', content: text });
+      addMsg('user', text);
+      els.input.value = '';
+      autoresize();
+
+      const assistantBody = addMsg('assistant', '');
+      let reasoningBody = null;
+      let assistantText = '';
+      let reasoningText = '';
+      let ttft = null;
+      const t0 = performance.now();
+      let firstContentT = null;
+      let reasoningTokens = 0;
+      let contentTokens = 0;
+
+      els.send.disabled = true;
+      const controller = new AbortController();
+      inflight = controller;
+
+      try {
+        const baseUrl = String(ep.baseUrl || '').replace(/\/+$/, '');
+        const url = baseUrl + '/chat/completions';
+        const body = {
+          model: ep.model,
+          messages: history,
+          stream: true,
+          max_tokens: 4096,
+        };
+        const headers = { 'Content-Type': 'application/json' };
+        if (ep.apiKey) headers['Authorization'] = 'Bearer ' + ep.apiKey;
+
+        const resp = await fetch(url, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+
+        if (!resp.ok) {
+          const errBody = await resp.text();
+          throw new Error(`HTTP ${resp.status}: ${errBody.slice(0, 500)}`);
+        }
+        if (!resp.body) throw new Error('No response body (stream unsupported?)');
+
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+
+          for (const raw of lines) {
+            const line = raw.replace(/\r$/, '');
+            if (!line.startsWith('data:')) continue;
+            const payload = line.slice(5).trim();
+            if (!payload || payload === '[DONE]') continue;
+            let json;
+            try { json = JSON.parse(payload); } catch (_) { continue; }
+            const delta = json.choices && json.choices[0] && json.choices[0].delta;
+            if (!delta) continue;
+
+            if (typeof delta.reasoning === 'string' && delta.reasoning.length) {
+              if (ttft === null) ttft = performance.now() - t0;
+              if (!reasoningBody) reasoningBody = addReasoningBlock(assistantBody);
+              reasoningText += delta.reasoning;
+              reasoningBody.textContent = reasoningText;
+              reasoningTokens += 1;
+              els.conversation.scrollTop = els.conversation.scrollHeight;
+            }
+            if (typeof delta.content === 'string' && delta.content.length) {
+              if (ttft === null) ttft = performance.now() - t0;
+              if (firstContentT === null) firstContentT = performance.now();
+              assistantText += delta.content;
+              assistantBody.textContent = assistantText;
+              contentTokens += 1;
+              els.conversation.scrollTop = els.conversation.scrollHeight;
+            }
+          }
+        }
+
+        const total = performance.now() - t0;
+        const genMs = firstContentT !== null ? performance.now() - firstContentT : 0;
+        addStats(assistantBody, {
+          ttft, total, genMs, contentTokens, reasoningTokens
+        });
+
+        if (assistantText) {
+          history.push({ role: 'assistant', content: assistantText });
+        }
+      } catch (err) {
+        if (err.name === 'AbortError') {
+          assistantBody.textContent = (assistantText || '') + '\n\n(aborted)';
+        } else {
+          assistantBody.parentElement.classList.remove('assistant');
+          assistantBody.parentElement.classList.add('error');
+          assistantBody.parentElement.querySelector('.label').textContent = 'Error';
+          assistantBody.textContent = String(err.message || err);
+        }
+      } finally {
+        inflight = null;
+        els.send.disabled = false;
+      }
+    }
+
+    function clearAll() {
+      if (inflight) inflight.abort();
+      history = [];
+      els.conversation.innerHTML = '';
+      els.conversation.appendChild(els.empty);
+      els.empty.style.display = '';
+    }
+
+    els.endpoint.addEventListener('change', updateModelDisplay);
+    els.send.addEventListener('click', send);
+    els.clear.addEventListener('click', clearAll);
+    els.input.addEventListener('input', autoresize);
+    els.input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        send();
+      }
+    });
+    document.addEventListener('keydown', (e) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        clearAll();
+      }
+    });
+
+    loadEndpoints().then(() => els.input.focus());
+  </script>
+</body>
+</html>

@@ -94,6 +94,16 @@ For richer visibility:
 - **System-wide GPU / ANE / power draw** on Apple Silicon — `brew install asitop` then run `asitop`
 - **GUI overview** — Activity Monitor → View → GPU History
 
+### Chat UI
+
+| Command | What it does |
+|---|---|
+| `mlxctl chat [--port N] [--no-open]` | Serve a single-page web chat at `http://127.0.0.1:7780` (default port). Picks any configured endpoint, streams responses, shows reasoning chain-of-thought for thinking models, displays TTFT and tokens/sec. |
+
+Pure-static HTML + JS — uses Python's built-in `http.server` to serve it. The page talks directly to MLX (no proxy), so it exercises the exact same code path your real client would. Great for diagnosing whether a problem is in *your* client or in MLX itself.
+
+Requires `python3` (built into macOS).
+
 ## Config file
 
 `~/.config/mlxctl/servers.json`:

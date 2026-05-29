@@ -70,6 +70,30 @@ is_loaded() {
   launchctl print "$DOMAIN/$(label_for "$1")" >/dev/null 2>&1
 }
 
+# Extract the running PID for a service from `launchctl print`. Empty if not running.
+pid_for() {
+  launchctl print "$DOMAIN/$(label_for "$1")" 2>/dev/null \
+    | awk -F'=' '/^[[:space:]]*pid[[:space:]]*=/ {gsub(/ /,"",$2); print $2; exit}'
+}
+
+# Pretty-print a row of process stats for one running pid.
+# Args: name port pid
+print_proc_row() {
+  local name="$1" port="$2" pid="$3"
+  local ps_out
+  ps_out="$(ps -o pcpu=,rss=,etime= -p "$pid" 2>/dev/null | awk '{$1=$1; print}')"
+  if [[ -z "$ps_out" ]]; then
+    printf '%-16s %-6s %-7s %-7s %-9s %-12s\n' "$name" "$port" "$pid" "-" "-" "(dead)"
+    return
+  fi
+  local cpu rss_kb rss_gb etime
+  cpu="$(echo "$ps_out" | awk '{print $1}')"
+  rss_kb="$(echo "$ps_out" | awk '{print $2}')"
+  rss_gb="$(awk -v k="$rss_kb" 'BEGIN { printf "%.2fG", k/1024/1024 }')"
+  etime="$(echo "$ps_out" | awk '{print $3}')"
+  printf '%-16s %-6s %-7s %-7s %-9s %-12s\n' "$name" "$port" "$pid" "${cpu}%" "$rss_gb" "$etime"
+}
+
 # Escape a string for safe inclusion in plist XML.
 xml_escape() {
   local s="$1"
@@ -316,6 +340,49 @@ cmd_plist() {
   generate_plist "$1"
 }
 
+cmd_ps() {
+  require_config
+  local count
+  count="$(jq '.servers | length' "$CONFIG_FILE")"
+  if [[ "$count" -eq 0 ]]; then
+    info "No servers configured."
+    return
+  fi
+  printf '%-16s %-6s %-7s %-7s %-9s %-12s\n' "NAME" "PORT" "PID" "CPU" "RSS" "UPTIME"
+  printf '%-16s %-6s %-7s %-7s %-9s %-12s\n' "----" "----" "---" "---" "---" "------"
+  while IFS=$'\t' read -r name port; do
+    if is_loaded "$name"; then
+      local pid; pid="$(pid_for "$name")"
+      if [[ -n "$pid" && "$pid" != "0" ]]; then
+        print_proc_row "$name" "$port" "$pid"
+      else
+        printf '%-16s %-6s %-7s %-7s %-9s %-12s\n' "$name" "$port" "?" "-" "-" "(loading)"
+      fi
+    else
+      printf '%-16s %-6s %-7s %-7s %-9s %-12s\n' "$name" "$port" "-" "-" "-" "(stopped)"
+    fi
+  done < <(jq -r '.servers[] | "\(.name)\t\(.port)"' "$CONFIG_FILE")
+}
+
+cmd_top() {
+  local interval=2
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -n|--interval) interval="$2"; shift 2;;
+      *) die "unknown flag: $1";;
+    esac
+  done
+  trap 'echo; exit 0' INT
+  while true; do
+    clear
+    printf 'mlxctl top — every %ss — Ctrl+C to exit\n\n' "$interval"
+    cmd_ps
+    printf '\nFor per-request tokens/sec:  mlxctl logs <name> -f\n'
+    printf 'For system-wide GPU/power:   asitop  (brew install asitop)\n'
+    sleep "$interval"
+  done
+}
+
 cmd_edit() {
   ensure_dirs
   [[ -f "$CONFIG_FILE" ]] || cmd_init >/dev/null
@@ -345,6 +412,10 @@ Lifecycle:
   status [name]                         list, or 'launchctl print' for one
   logs <name> [-f]                      tail stdout + stderr
 
+Metrics:
+  ps                                    one-shot table of PID / CPU / RSS / uptime
+  top [-n SECS]                         live-refresh ps (default every 2s)
+
 Paths:
   config: $CONFIG_FILE
   plists: $LAUNCH_AGENTS_DIR/${LABEL_PREFIX}.<name>.plist
@@ -368,6 +439,8 @@ main() {
     status)            cmd_status  "$@";;
     logs)              cmd_logs    "$@";;
     plist)             cmd_plist   "$@";;
+    ps)                cmd_ps      "$@";;
+    top)               cmd_top     "$@";;
     edit)              cmd_edit    "$@";;
     help|-h|--help|"") cmd_help;;
     *) die "unknown command: $cmd  (try 'mlxctl help')";;

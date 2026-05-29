@@ -81,6 +81,19 @@ curl http://127.0.0.1:8082/v1/models
 | `mlxctl status [name]` | Without name: same as `list`. With name: full `launchctl print` output. |
 | `mlxctl logs <name> [-f]` | Tail stdout + stderr. |
 
+### Metrics
+
+| Command | What it does |
+|---|---|
+| `mlxctl ps` | One-shot table: per-server PID, CPU%, RSS (RAM), uptime. |
+| `mlxctl top [-n SECS]` | Same as `ps` but refreshes (default every 2s). Ctrl+C to exit. |
+
+For richer visibility:
+
+- **Per-request tokens/sec**, prompt/decode timings — `mlxctl logs <name> -f` (mlx_lm.server prints these at INFO level)
+- **System-wide GPU / ANE / power draw** on Apple Silicon — `brew install asitop` then run `asitop`
+- **GUI overview** — Activity Monitor → View → GPU History
+
 ## Config file
 
 `~/.config/mlxctl/servers.json`:

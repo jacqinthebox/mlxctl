@@ -462,6 +462,64 @@ cmd_edit() {
   "${EDITOR:-vi}" "$CONFIG_FILE"
 }
 
+# Print Omegon configuration for a configured endpoint.
+# Info goes to stderr, exports to stdout, so `eval "$(mlxctl omegon qwen)"` works.
+cmd_omegon() {
+  require_jq; require_config
+
+  if [[ $# -eq 0 ]]; then
+    info "Configured endpoints (use 'mlxctl omegon <name>' to print exports):"
+    info ""
+    printf '%-18s %-46s %s\n' "NAME" "MODEL (use as openai:<model>)" "URL"
+    printf '%-18s %-46s %s\n' "----" "-----------------------------" "---"
+    while IFS=$'\t' read -r name model host port; do
+      printf '%-18s %-46s http://%s:%s/v1\n' "$name" "$model" "$host" "$port"
+    done < <(jq -r '.servers[] | "\(.name)\t\(.model)\t\(.host)\t\(.port)"' "$CONFIG_FILE")
+    return
+  fi
+
+  local name="$1"; shift
+  local mode="exports"
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --slash) mode="slash"; shift;;
+      --eval)  mode="exports"; shift;;
+      *) die "unknown flag: $1  (try --slash or --eval)";;
+    esac
+  done
+
+  local sj; sj="$(server_json "$name")"
+  local model host port url
+  model="$(echo "$sj" | jq -r '.model')"
+  host="$(echo "$sj"  | jq -r '.host')"
+  port="$(echo "$sj"  | jq -r '.port')"
+  url="http://${host}:${port}/v1"
+
+  if [[ "$mode" == "slash" ]]; then
+    # Slash commands to paste inside an Omegon TUI session.
+    cat <<EOF
+/secrets set OPENAI_API_KEY dummy
+/model openai:${model}
+EOF
+    info ""
+    info "Note: also export OPENAI_BASE_URL=${url} in the shell that launches omegon."
+    return
+  fi
+
+  # Default: shell exports on stdout, guidance on stderr.
+  {
+    echo "# Omegon config for endpoint '$name' (${url})"
+    echo "#   shell:   eval \"\$(mlxctl omegon $name)\""
+    echo "#   in TUI:  /secrets set OPENAI_API_KEY dummy"
+    echo "#            /model openai:${model}"
+    echo
+  } >&2
+  cat <<EOF
+export OPENAI_BASE_URL='${url}'
+export OPENAI_API_KEY='dummy'
+EOF
+}
+
 cmd_help() {
   cat <<EOF
 mlxctl — manage mlx_lm.server instances on macOS via launchd
@@ -492,6 +550,12 @@ Metrics:
 Chat UI:
   chat [--port N] [--no-open]           serve a tiny web chat UI to test endpoints
 
+Integrations:
+  omegon                                list endpoints with Omegon-ready model ids
+  omegon <name> [--slash]               print exports for one endpoint
+                                          eval "\$(mlxctl omegon <name>)"
+                                          --slash prints TUI /commands instead
+
 Paths:
   config: $CONFIG_FILE
   plists: $LAUNCH_AGENTS_DIR/${LABEL_PREFIX}.<name>.plist
@@ -518,6 +582,7 @@ main() {
     ps)                cmd_ps      "$@";;
     top)               cmd_top     "$@";;
     chat)              cmd_chat    "$@";;
+    omegon)            cmd_omegon  "$@";;
     edit)              cmd_edit    "$@";;
     help|-h|--help|"") cmd_help;;
     *) die "unknown command: $cmd  (try 'mlxctl help')";;

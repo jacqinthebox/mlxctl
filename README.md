@@ -39,7 +39,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 mlxctl init
 
 # register two models on two ports
-mlxctl add qwen   --model mlx-community/Qwen3-Coder-Next-4bit   --port 8080
+mlxctl add qwen   --model mlx-community/Qwen3-Coder-Next-4bit   --port 8081
 mlxctl add gemma  --model mlx-community/gemma-4-26b-a4b-it-4bit --port 8082
 
 # launch them — they're now running and will autostart on next login
@@ -103,6 +103,30 @@ For richer visibility:
 Pure-static HTML + JS — uses Python's built-in `http.server` to serve it. The page talks directly to MLX (no proxy), so it exercises the exact same code path your real client would. Great for diagnosing whether a problem is in *your* client or in MLX itself.
 
 Requires `python3` (built into macOS).
+
+### Integrations
+
+#### Omegon
+
+[Omegon](https://github.com/styrene-lab/omegon) is a Rust agent harness. Its OpenAI client honors `OPENAI_BASE_URL`, so any mlxctl endpoint can drive Omegon — pick the openai provider and use the full HuggingFace repo id as the model.
+
+| Command | What it does |
+|---|---|
+| `mlxctl omegon` | Lists configured endpoints with their Omegon-ready model id (`openai:<model>`). |
+| `mlxctl omegon <name>` | Prints `export OPENAI_BASE_URL=…` / `OPENAI_API_KEY=dummy` on stdout, plus copy-paste TUI commands on stderr. Designed for `eval "$(mlxctl omegon <name>)"`. |
+| `mlxctl omegon <name> --slash` | Prints only the Omegon TUI slash commands (`/secrets set`, `/model openai:…`) — paste these inside a running Omegon session. |
+
+Typical flow:
+
+```bash
+eval "$(mlxctl omegon gemma)"      # sets OPENAI_BASE_URL and OPENAI_API_KEY
+omegon                              # launches with the env in place
+# then inside the TUI:
+#   /secrets set OPENAI_API_KEY dummy
+#   /model openai:mlx-community/gemma-4-26b-a4b-it-4bit
+```
+
+> Don't use Omegon's `Ollama (Local)` provider for MLX — that path talks to Ollama's native API on `:11434` and uses Ollama-style model names like `gemma4:26b`, which MLX rejects (HuggingFace repo ids can't contain `:`).
 
 ## Config file
 

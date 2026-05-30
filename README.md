@@ -1,22 +1,23 @@
 # mlxctl
 
-A tiny CLI to run [`mlx_lm.server`](https://github.com/ml-explore/mlx-lm) instances as managed background services on macOS, using `launchd` under the hood.
+A small bash CLI to run [`mlx_lm.server`](https://github.com/ml-explore/mlx-lm) instances as `launchd` user agents on macOS.
 
-Stop typing `mlx_lm.server --model ... --port ...` in three terminals. Just `mlxctl start qwen` / `mlxctl start gemma`.
+It replaces ad-hoc `mlx_lm.server --model ... --port ...` invocations with named, persistent services: `mlxctl start qwen`, `mlxctl start gemma`.
 
-## Why
+## What it does
 
-- **Persistent**: servers survive terminal close and reboot (proper `launchd` agents).
-- **Auto-restart**: if `mlx_lm.server` crashes, `launchd` brings it back.
-- **One source of truth**: all your model/port mappings live in `~/.config/mlxctl/servers.json`.
-- **Zero runtime overhead**: pure bash + `jq` + macOS built-ins. No daemon of its own.
+- Writes a `launchd` plist per server (`RunAtLoad=true`, `KeepAlive=true`).
+- Bootstraps it into the user GUI domain (`gui/$UID`).
+- Tracks server name, model, port, host, and optional extra args in `~/.config/mlxctl/servers.json`.
+
+That's the whole product. No daemon, no dependencies beyond `bash`, `jq`, and `mlx-lm`.
 
 ## Requirements
 
-- macOS (uses `launchd` — Linux/Windows not supported)
-- `mlx_lm` (`pip install mlx-lm`)
+- macOS (uses `launchd`; Linux/Windows are not supported)
+- `mlx-lm` (`pip install mlx-lm`)
 - `jq` (`brew install jq`)
-- `bash` 4+ (macOS ships 3.x; you don't need 4 — the script targets 3.2)
+- `bash` (the script targets 3.2, which is what macOS ships)
 
 ## Install
 
@@ -26,7 +27,7 @@ cd mlxctl
 ./install.sh
 ```
 
-This symlinks `bin/mlxctl` into `~/.local/bin/mlxctl`. Make sure `~/.local/bin` is on your `PATH`:
+`install.sh` symlinks `bin/mlxctl` into `~/.local/bin/mlxctl`. Make sure `~/.local/bin` is on `PATH`:
 
 ```bash
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
@@ -35,26 +36,21 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 ## Quickstart
 
 ```bash
-# create config dir
 mlxctl init
 
-# register two models on two ports
-mlxctl add qwen   --model mlx-community/Qwen3-Coder-Next-4bit   --port 8081
-mlxctl add gemma  --model mlx-community/gemma-4-26b-a4b-it-4bit --port 8082
+mlxctl add qwen  --model mlx-community/Qwen3-Coder-Next-4bit   --port 8081
+mlxctl add gemma --model mlx-community/gemma-4-26b-a4b-it-4bit --port 8082
 
-# launch them — they're now running and will autostart on next login
 mlxctl start qwen
 mlxctl start gemma
 
-# verify
 mlxctl list
-# NAME               MODEL                                          PORT   STATUS
-# ----               -----                                          ----   ------
-# qwen               mlx-community/Qwen3-Coder-Next-4bit            8080   running
-# gemma              mlx-community/gemma-4-26b-a4b-it-4bit          8082   running
+# NAME    MODEL                                          PORT   STATUS
+# ----    -----                                          ----   ------
+# qwen    mlx-community/Qwen3-Coder-Next-4bit            8081   running
+# gemma   mlx-community/gemma-4-26b-a4b-it-4bit          8082   running
 
-# poke them
-curl http://127.0.0.1:8080/v1/models
+curl http://127.0.0.1:8081/v1/models
 curl http://127.0.0.1:8082/v1/models
 ```
 
@@ -62,110 +58,110 @@ curl http://127.0.0.1:8082/v1/models
 
 ### Config
 
-| Command | What it does |
+| Command | Effect |
 |---|---|
-| `mlxctl init` | Create `~/.config/mlxctl/servers.json` |
-| `mlxctl add <name> --model M --port P [--host H] [--bin PATH] [-- EXTRA_ARGS...]` | Add a server |
-| `mlxctl remove <name>` | Stop and remove a server |
-| `mlxctl list` | List configured servers and their running status |
-| `mlxctl edit` | Open the config file in `$EDITOR` |
-| `mlxctl plist <name>` | Print the generated `launchd` plist (for debugging) |
+| `mlxctl init` | Create `~/.config/mlxctl/servers.json`. |
+| `mlxctl add <name> --model M --port P [--host H] [--bin PATH] [-- EXTRA_ARGS...]` | Add a server entry. |
+| `mlxctl remove <name>` | Stop the server and remove its entry. |
+| `mlxctl list` | List configured servers with their running status. |
+| `mlxctl edit` | Open the config file in `$EDITOR`. |
+| `mlxctl plist <name>` | Print the generated plist (for debugging). |
 
 ### Lifecycle
 
-| Command | What it does |
+| Command | Effect |
 |---|---|
 | `mlxctl start <name>` | Install plist + bootstrap. Server runs now and autostarts at login. |
-| `mlxctl stop <name>` | Bootout + remove plist. Stops now, will not autostart. |
-| `mlxctl restart <name>` | `stop` + `start`. Useful after editing config. |
+| `mlxctl stop <name>` | Bootout and remove plist. No autostart. |
+| `mlxctl restart <name>` | `stop` + `start`. Use after editing config. |
 | `mlxctl status [name]` | Without name: same as `list`. With name: full `launchctl print` output. |
-| `mlxctl logs <name> [-f]` | Tail stdout + stderr. |
+| `mlxctl logs <name> [-f]` | Tail stdout and stderr. |
 
 ### Metrics
 
-| Command | What it does |
+| Command | Effect |
 |---|---|
-| `mlxctl ps` | One-shot table: per-server PID, CPU%, RSS (RAM), uptime. |
-| `mlxctl top [-n SECS]` | Same as `ps` but refreshes (default every 2s). Ctrl+C to exit. |
+| `mlxctl ps` | Per-server PID, CPU%, RSS, uptime (one-shot). |
+| `mlxctl top [-n SECS]` | Same as `ps`, refreshing every N seconds (default 2). Ctrl+C to exit. |
 
-For richer visibility:
+For more detail:
 
-- **Per-request tokens/sec**, prompt/decode timings — `mlxctl logs <name> -f` (mlx_lm.server prints these at INFO level)
-- **System-wide GPU / ANE / power draw** on Apple Silicon — `brew install asitop` then run `asitop`
-- **GUI overview** — Activity Monitor → View → GPU History
+- Per-request tokens/sec and prompt/decode timings: `mlxctl logs <name> -f`. `mlx_lm.server` prints these at INFO.
+- System GPU / ANE / power: `brew install asitop`, then `asitop`.
+- GUI: Activity Monitor > View > GPU History.
 
 ### Chat UI
 
-| Command | What it does |
+| Command | Effect |
 |---|---|
-| `mlxctl chat [--port N] [--no-open]` | Serve a single-page web chat at `http://127.0.0.1:7780` (default port). Picks any configured endpoint, streams responses, shows reasoning chain-of-thought for thinking models, displays TTFT and tokens/sec. |
+| `mlxctl chat [--port N] [--no-open]` | Serve a static web chat at `http://127.0.0.1:7780`. Picks any configured endpoint, streams responses, shows reasoning blocks for thinking models, displays TTFT and tokens/sec. |
 
-Pure-static HTML + JS — uses Python's built-in `http.server` to serve it. The page talks directly to MLX (no proxy), so it exercises the exact same code path your real client would. Great for diagnosing whether a problem is in *your* client or in MLX itself.
+Static HTML and JS served via Python's `http.server`. The page talks to MLX directly, with no proxy, so it exercises the same code path as a normal client. Useful for isolating whether a problem is in a real client or in MLX.
 
-Requires `python3` (built into macOS).
+Requires `python3` (bundled with macOS).
 
 ### Integrations
 
 #### Omegon
 
-[Omegon](https://github.com/styrene-lab/omegon) is a Rust agent harness. Its OpenAI client honors `OPENAI_BASE_URL`, so any mlxctl endpoint can drive Omegon — pick the openai provider and use the full HuggingFace repo id as the model.
+[Omegon](https://github.com/styrene-lab/omegon) is a Rust agent harness. Its OpenAI client honors `OPENAI_BASE_URL`, so any mlxctl endpoint works as an Omegon backend via the `openai` provider with the full HuggingFace repo id as the model.
 
-| Command | What it does |
+| Command | Effect |
 |---|---|
-| `mlxctl omegon` | Lists configured endpoints with their Omegon-ready model id (`openai:<model>`). |
-| `mlxctl omegon <name>` | Prints `export OPENAI_BASE_URL=…` / `OPENAI_API_KEY=dummy` on stdout, plus copy-paste TUI commands on stderr. Designed for `eval "$(mlxctl omegon <name>)"`. |
-| `mlxctl omegon <name> --slash` | Prints only the Omegon TUI slash commands (`/secrets set`, `/model openai:…`) — paste these inside a running Omegon session. |
+| `mlxctl omegon` | List configured endpoints with their Omegon-ready model id (`openai:<model>`). |
+| `mlxctl omegon <name>` | Print `export OPENAI_BASE_URL=...` and `OPENAI_API_KEY=dummy` on stdout, plus the TUI commands on stderr. Designed for `eval "$(mlxctl omegon <name>)"`. |
+| `mlxctl omegon <name> --slash` | Print only the Omegon TUI slash commands. Paste these inside a running session. |
 
 Typical flow:
 
 ```bash
-eval "$(mlxctl omegon qwen)"        # sets OPENAI_BASE_URL (host only — no /v1!),
-                                    # OPENAI_API_KEY=dummy, and unsets OLLAMA_HOST
-omegon                              # launches with the env in place
-# then inside the TUI:
-#   /login openai                   # paste 'dummy' as the API key
+eval "$(mlxctl omegon qwen)"   # sets OPENAI_BASE_URL (host only, no /v1),
+                               # sets OPENAI_API_KEY=dummy, unsets OLLAMA_HOST
+omegon                         # launches with the env in place
+# inside the TUI:
+#   /login openai              # paste 'dummy' as the API key
 #   /model openai:mlx-community/Qwen3-Coder-Next-4bit
 ```
 
-Three gotchas worth knowing:
+Three gotchas:
 
-1. **Don't include `/v1` in `OPENAI_BASE_URL`** — omegon's OpenAI client appends `/v1/chat/completions` itself, so a `/v1` suffix yields `/v1/v1/...` → 404. `mlxctl omegon` strips it for you.
-2. **Unset `OLLAMA_HOST`** — if you have it exported in your shell, omegon picks the Ollama provider by default (and sends Ollama-style names like `gemma4:26b` which MLX rejects, because HuggingFace repo ids can't contain `:`). `mlxctl omegon` unsets it for you.
-3. **Reasoning models appear "silent"** — Gemma 4, DeepSeek-R1, Qwen3-Thinking etc. emit their chain-of-thought in `message.reasoning` / `delta.reasoning`. Omegon's OpenAI-compatible client only renders `content`, and at omegon's default `max_tokens` the model often exhausts the budget mid-thought, leaving `content` empty → blank bubble. Two fixes:
+1. **`OPENAI_BASE_URL` must not include `/v1`.** Omegon's OpenAI client appends `/v1/chat/completions` itself. A `/v1` suffix produces `/v1/v1/chat/completions` (404). `mlxctl omegon` strips it.
+2. **`OLLAMA_HOST` overrides provider selection.** If exported in your shell, Omegon defaults to the Ollama provider and sends Ollama-style names like `gemma4:26b`, which MLX rejects because HuggingFace repo ids cannot contain `:`. `mlxctl omegon` unsets it.
+3. **Reasoning models return empty content by default.** Gemma 4, DeepSeek-R1, and Qwen3-Thinking emit chain-of-thought in `message.reasoning`. Omegon's OpenAI client only renders `content`. With `mlx_lm.server`'s default `max_tokens=512`, the model often exhausts the budget inside `reasoning` and `content` stays empty. Two workarounds:
 
-   - **Disable thinking on the server** (recommended for chat). Add this to the model's `extraArgs`:
+   - **Disable thinking on the server.** Add to the model's `extraArgs`:
      ```json
      "extraArgs": ["--chat-template-args", "{\"enable_thinking\":false}"]
      ```
-     Then `mlxctl restart <name>`. Gemma 4 / Qwen3 will answer directly with no `<think>` block. Verify with a 50-token probe:
+     Then `mlxctl restart <name>`. The chat template skips the `<think>` block and the model writes directly into `content`. Verify with:
      ```bash
      curl -sS -X POST http://127.0.0.1:8082/v1/chat/completions \
        -H 'Content-Type: application/json' \
        -d '{"model":"<id>","messages":[{"role":"user","content":"say hi"}],"max_tokens":50}'
      ```
-   - **Leave thinking on, but raise the budget** if you want the reasoning visible elsewhere (e.g. mlxctl's chat UI, which renders `reasoning`). Pass `--max-tokens 4096` (default is 512) in `extraArgs`. Note: omegon will still show a blank bubble unless its client learns to read `reasoning`.
+   - **Keep thinking on and raise the budget.** Add `--max-tokens 4096` to `extraArgs`. Omegon will still show empty bubbles until its client reads `reasoning`, but `mlxctl chat` and other reasoning-aware clients will see the trace.
 
-   Qwen3-Coder is a non-reasoning model — works out of the box, no flags needed.
+   Qwen3-Coder is not a reasoning model. It works without any flags.
 
-##### Why reasoning models go silent in OpenAI-compatible clients
+##### Why reasoning models behave this way under MLX
 
-Reasoning models like Gemma 4, DeepSeek-R1, and Qwen3-Thinking are trained to emit a chain-of-thought between `<think>...</think>` tags before their final answer. Different servers handle those tags differently:
+Reasoning models are trained to wrap chain-of-thought in `<think>...</think>` before the final answer. Servers handle those tags differently:
 
-| Server | `<think>` handling | Net effect |
+| Server | `<think>` handling | Effect |
 |---|---|---|
-| **Ollama** | Merges thought + answer into a single `message.content` string (or strips `<think>` blocks entirely for some models) | Any OpenAI-compatible client sees a normal response. Works everywhere. |
-| **mlx_lm.server** | Splits them — chain-of-thought goes into a separate `message.reasoning` field, only the final answer goes into `message.content` | Clients that read `content` only see whatever the model wrote *after* `</think>`. If the budget runs out first, `content` is empty. |
+| Ollama | Merges thought and answer into a single `message.content` string, or strips `<think>` entirely depending on the model. | Any OpenAI-compatible client sees a normal response. |
+| `mlx_lm.server` | Splits them. Chain-of-thought goes into `message.reasoning`; the final answer goes into `message.content`. | Clients that only read `content` see what the model wrote after `</think>`. If the budget runs out first, `content` is empty. |
 
-That's why the same Gemma 4 model "worked in Ollama" but appears silent through MLX+omegon. It's not the model, it's the response shape.
+So the same Gemma 4 model works under Ollama and looks broken under MLX+Omegon. The model is fine. The response shape changed.
 
-`mlx_lm.server`'s default `--max-tokens` is **512** — generous for a non-reasoning model, tiny for one that spends 200–800 tokens on hidden thinking before saying "Hi". When the budget runs out mid-thought, MLX returns `finish_reason: "length"`, `reasoning` populated, `content: ""`. Omegon dutifully renders the empty string.
+`mlx_lm.server`'s default `--max-tokens` is 512. That is enough for a non-reasoning model and not enough for one that spends 200 to 800 tokens thinking before answering. When the budget runs out mid-thought, MLX returns `finish_reason: "length"` with `reasoning` populated and `content` empty.
 
 Two ways out:
 
-- **Server-side off switch (`enable_thinking:false`)**. The chat template for Gemma 4 and Qwen3 honours this flag — when set, the template skips the `<think>` injection entirely and the model behaves like a plain chat model. This is the simplest fix for any OpenAI-compatible client that doesn't speak the `reasoning` field. It's also the cheapest at inference time (no wasted tokens).
-- **Per-request override**. The same flag can be sent per request as `chat_template_kwargs: {"enable_thinking": false}` in the JSON body. Useful if you want one server that some clients use with thinking on (mlxctl chat UI shows the reasoning trace) and others without.
+- `chat_template_kwargs: {"enable_thinking": false}`, either baked into server args (above) or sent per request. Gemma 4 and Qwen3 honor it via their chat template. Cheapest at inference time because no tokens are wasted on thinking.
+- Increase `max_tokens` and accept the wasted thinking tokens. Useful if some clients want the reasoning visible and others do not, since the server stays uniform.
 
-Once omegon learns to render `delta.reasoning` / `message.reasoning`, neither workaround will be needed. Until then, server-side off is the path of least surprise.
+If Omegon adds support for `reasoning`, neither workaround is needed.
 
 ## Config file
 
@@ -177,7 +173,7 @@ Once omegon learns to render `delta.reasoning` / `message.reasoning`, neither wo
     {
       "name": "qwen",
       "model": "mlx-community/Qwen3-Coder-Next-4bit",
-      "port": 8080,
+      "port": 8081,
       "host": "127.0.0.1",
       "extraArgs": []
     },
@@ -196,11 +192,11 @@ Optional per-server fields:
 
 | Field | Default | Notes |
 |---|---|---|
-| `host` | `127.0.0.1` | Bind address. Use `0.0.0.0` to expose on LAN. |
-| `bin` | auto-detected | Override path to `mlx_lm.server` (e.g. for a specific venv). |
-| `extraArgs` | `[]` | Extra args passed verbatim to `mlx_lm.server`. |
+| `host` | `127.0.0.1` | Bind address. Use `0.0.0.0` for LAN. |
+| `bin` | auto-detected | Override path to `mlx_lm.server` (e.g. a specific venv). |
+| `extraArgs` | `[]` | Passed verbatim to `mlx_lm.server`. |
 
-You can edit it directly with `mlxctl edit`, then `mlxctl restart <name>` to apply.
+Edit it directly with `mlxctl edit`, then `mlxctl restart <name>` to apply.
 
 ## Paths
 
@@ -212,26 +208,21 @@ You can edit it directly with `mlxctl edit`, then `mlxctl restart <name>` to app
 
 ## How it works
 
-Each `mlxctl start <name>` writes a `launchd` plist with `RunAtLoad=true` and `KeepAlive=true`, then `launchctl bootstrap`s it into your user GUI domain (`gui/$UID`). That's it.
+`mlxctl start <name>` writes a `launchd` plist with `RunAtLoad=true` and `KeepAlive=true`, then `launchctl bootstrap`s it into `gui/$UID`. That is the whole mechanism.
 
-To see what's actually loaded:
+Inspect what's loaded:
 
 ```bash
 launchctl list | grep mlxctl
-```
-
-To inspect one in detail:
-
-```bash
 mlxctl status qwen
 ```
 
 ## Common patterns
 
-### Switching ports without losing config
+### Switching ports
 
 ```bash
-mlxctl edit              # change "port": 8080 to "port": 9090
+mlxctl edit              # change "port": 8081 to "port": 9090
 mlxctl restart qwen
 ```
 
@@ -249,7 +240,7 @@ mlxctl add qwen --model mlx-community/Qwen3-Coder-Next-4bit --port 8080 \
   --bin /Users/me/venvs/mlx/bin/mlx_lm.server
 ```
 
-### Stop everything at once
+### Stop everything
 
 ```bash
 for s in $(jq -r '.servers[].name' ~/.config/mlxctl/servers.json); do
@@ -257,42 +248,37 @@ for s in $(jq -r '.servers[].name' ~/.config/mlxctl/servers.json); do
 done
 ```
 
-## Field notes on "OpenAI-compatible"
+## Notes on "OpenAI-compatible"
 
-If you're new to running local LLMs and shuttling them between clients (chat UIs, agents, editors), the most useful thing to internalize early is this:
+"OpenAI-compatible" guarantees the URL shape and JSON skeleton. It does not guarantee anything else. Every layer below the wire format varies between implementations.
 
-> **"OpenAI-compatible" means the URL and the JSON skeleton match. Nothing else is guaranteed.**
+### Layers that vary
 
-Every layer below the wire format drifts between implementations. None of these layers is wrong on its own — they each made a reasonable local choice — but stacking them creates booby traps. Some of them you'll only discover by getting bitten.
-
-### Layers that drift
-
-| Layer | Where it bites |
+| Layer | What can break |
 |---|---|
-| **URL shape** | Some clients want `OPENAI_BASE_URL=http://host:port`, some want `…/v1`. Get it wrong and you see `404 /v1/v1/chat/completions`. |
-| **Provider selection** | Env vars like `OLLAMA_HOST` or `ANTHROPIC_API_KEY` can silently change which adapter a multi-provider client picks. Look at the actual footer/status before debugging the wire. |
-| **Model id grammar** | Ollama tags use `:` (`gemma4:26b`). HuggingFace repo ids forbid `:` (`mlx-community/gemma-4-26b-a4b-it-4bit`). Servers usually reject the wrong shape with terse errors. |
-| **Auth conventions** | OpenAI wants `Authorization: Bearer <key>`. Some local servers want any non-empty string ("dummy" works). A few want no header at all and reject if you send one. |
-| **Default knobs** | `mlx_lm.server` defaults `max_tokens=512`. Some servers default to a few thousand. A reasoning model on the low default goes silent. |
-| **Response shape extensions** | OpenAI added `message.reasoning` for o-series. MLX adopted it for any reasoning-capable model. Ollama merges everything into `content`. Clients that predate the extension only read `content` → blank bubbles. |
-| **Capability detection** | Some clients keep a hardcoded allowlist of "reasoning models." If your model name isn't on the list, the reasoning field is silently dropped even when it's right there in the response. |
-| **Chat template semantics** | `enable_thinking: false`, `tools: [...]`, `response_format: {...}` — each is honored by some templates and ignored by others. The same flag can mean different things across models. |
-| **Streaming format** | Ollama is line-delimited JSON. OpenAI is Server-Sent Events (`data: {...}\n\n` framing, `data: [DONE]` terminator). They're not interchangeable even though both ship JSON over HTTP. |
-| **Tool calling** | OpenAI uses `tool_calls` arrays. Anthropic uses `tool_use` content blocks. Ollama has its own shape. llama.cpp has yet another. None map cleanly. |
-| **Stop / finish reasons** | `"stop"`, `"length"`, `"end_turn"`, `"tool_use"`, `"content_filter"` — overlapping vocabularies with non-identical meanings. |
-| **Token counting** | Input / output / reasoning / cached / reused — every provider counts and reports differently. Bills and rate limits diverge accordingly. |
+| URL shape | Some clients want `OPENAI_BASE_URL=http://host:port`. Others want `.../v1`. Wrong choice produces `404 /v1/v1/chat/completions` or `404 /chat/completions`. |
+| Provider selection | Env vars like `OLLAMA_HOST` or `ANTHROPIC_API_KEY` can change which adapter a multi-provider client picks. Check the client's footer or status before debugging the wire. |
+| Model id grammar | Ollama tags use `:` (`gemma4:26b`). HuggingFace repo ids forbid `:` (`mlx-community/gemma-4-26b-a4b-it-4bit`). Wrong shape usually returns a terse error. |
+| Auth conventions | OpenAI wants `Authorization: Bearer <key>`. Some local servers accept any non-empty string. A few reject the header entirely. |
+| Default knobs | `mlx_lm.server` defaults `max_tokens=512`. Other servers default higher. A reasoning model on the low default goes silent. |
+| Response shape extensions | OpenAI added `message.reasoning` for o-series. MLX adopted it for any reasoning-capable model. Ollama merges everything into `content`. Clients that predate the extension only read `content`. |
+| Capability detection | Some clients keep a hardcoded allowlist of "reasoning models." If your model name is not on the list, the reasoning field is silently dropped. |
+| Chat template semantics | `enable_thinking: false`, `tools`, `response_format`. Each is honored by some templates and ignored by others. The same flag can mean different things across models. |
+| Streaming format | Ollama is line-delimited JSON. OpenAI is Server-Sent Events (`data: {...}\n\n` framing, `data: [DONE]` terminator). Not interchangeable. |
+| Tool calling | OpenAI uses `tool_calls` arrays. Anthropic uses `tool_use` content blocks. Ollama has its own shape. llama.cpp has another. None map cleanly. |
+| Stop / finish reasons | `stop`, `length`, `end_turn`, `tool_use`, `content_filter`. Overlapping vocabularies with non-identical meanings. |
+| Token counting | Input, output, reasoning, cached, reused. Each provider counts and reports differently. |
 
-### Survival kit
+### Working approach
 
-1. **Probe every new endpoint with `curl` before pointing a real client at it.** Five minutes of `curl … | jq` saves an hour of "why is my UI broken." Always print the full response shape, not just `content` — that's how you spot `reasoning`, `tool_calls`, refusals, and other fields a client might be silently dropping.
-2. **When something "doesn't answer," check `finish_reason` first.** `"length"` with empty `content` means the model exhausted the budget on something invisible (reasoning, tools, formatting). `"stop"` with empty `content` means you're parsing the wrong field.
-3. **Trust the server's logs, not your client's UI.** A 200 OK with a blank UI bubble is a parser problem on the client side, not a model problem. The wire trace doesn't lie.
-4. **Treat each model + server + client triplet as its own configuration.** "Qwen on MLX with omegon" and "Gemma on MLX with omegon" are different setups with different defaults and different bugs. Don't assume a fix for one carries over.
-5. **The 9pm-Friday debugging session is the standard onboarding ritual.** Everyone who knows this ecosystem learned it the same way. There is no comprehensive tutorial because the ecosystem moves faster than anyone can write one.
+1. Probe new endpoints with `curl | jq` before pointing a real client at one. Print the full response, not just `content`, to spot `reasoning`, `tool_calls`, refusals, and other fields a client might drop.
+2. When a response looks empty, check `finish_reason` first. `length` with empty `content` means the budget went somewhere invisible. `stop` with empty `content` means you are parsing the wrong field.
+3. Trust the server's logs over the client's UI. A 200 with a blank bubble is a parser issue on the client side.
+4. Treat each (model, server, client) combination as its own configuration. A fix that worked for Qwen on MLX+Omegon does not necessarily carry over to Gemma on the same stack.
 
-### Worked example: the Gemma blank-bubble episode
+### Worked example
 
-The "Reasoning models appear silent" gotcha and "Why reasoning models go silent" deep-dive above walk through one full instance of these layers colliding: Gemma 4 (model thinks before answering) + MLX (splits thinking into a separate field) + omegon (only reads `content`, doesn't recognize Gemma as a reasoning model) + `max_tokens=512` default (thinking exhausts the budget). Pull on any one of those four threads and the bug disappears. We pulled on the chat template (`enable_thinking:false`). Equally valid would have been raising `max_tokens`, switching client, or switching server. Knowing which thread to pull is the skill.
+The Gemma case above is one full instance of these layers colliding: Gemma 4 (thinks before answering) + MLX (splits thinking into a separate field) + Omegon (only reads `content`, does not recognize Gemma as a reasoning model) + `max_tokens=512` default (thinking exhausts the budget). Pulling any one of the four threads fixes it. We chose the chat template (`enable_thinking:false`). Raising `max_tokens`, switching client, or switching server would also work.
 
 ## License
 
